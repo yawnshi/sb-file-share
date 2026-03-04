@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>LAN File Share</title>
+
+    <style>
+      body {
+        font-family: Arial;
+        background: #f2f2f2;
+        margin: 40px;
+      }
+
+      .box {
+        background: white;
+        padding: 25px;
+        border-radius: 10px;
+        max-width: 700px;
+        margin: auto;
+      }
+
+      #drop {
+        border: 2px dashed #888;
+        padding: 40px;
+        text-align: center;
+        margin-bottom: 20px;
+        cursor: pointer;
+      }
+
+      .progress {
+        height: 10px;
+        background: #ddd;
+        margin-top: 10px;
+      }
+
+      .bar {
+        height: 10px;
+        width: 0%;
+        background: #4caf50;
+      }
+
+      .file {
+        margin: 8px 0;
+      }
+
+      button {
+        margin-left: 10px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="box">
+      <h2>LAN File Share</h2>
+
+      <div id="drop">Drop files here or click</div>
+
+      <div class="progress">
+        <div class="bar" id="bar"></div>
+      </div>
+
+      <h3>Files</h3>
+
+      <div id="files"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+
+    <script>
+      const socket = io();
+      const drop = document.getElementById("drop");
+      const bar = document.getElementById("bar");
+
+      function upload(file) {
+        const form = new FormData();
+        form.append("file", file);
+
+        const xhr = new XMLHttpRequest();
+
+        xhr.open("POST", "/upload");
+
+        xhr.upload.onprogress = (e) => {
+          const percent = (e.loaded / e.total) * 100;
+          bar.style.width = percent + "%";
+        };
+
+        xhr.onload = () => {
+          bar.style.width = "0%";
+        };
+
+        xhr.send(form);
+      }
+
+      // drag drop
+
+      drop.onclick = () => {
+        const i = document.createElement("input");
+        i.type = "file";
+
+        i.onchange = () => upload(i.files[0]);
+
+        i.click();
+      };
+
+      drop.ondragover = (e) => {
+        e.preventDefault();
+      };
+
+      drop.ondrop = (e) => {
+        e.preventDefault();
+
+        upload(e.dataTransfer.files[0]);
+      };
+
+      function addFile(f) {
+        const div = document.createElement("div");
+        div.className = "file";
+        div.id = f.file;
+
+        const a = document.createElement("a");
+        a.href = f.url;
+        a.innerText = f.name;
+        a.download = f.name;
+
+        const del = document.createElement("button");
+        del.innerText = "delete";
+
+        del.onclick = async () => {
+          await fetch("/delete/" + f.file, { method: "DELETE" });
+
+          const el = document.getElementById(f.file);
+          if (el) el.remove();
+        };
+
+        div.appendChild(a);
+        div.appendChild(del);
+
+        files.appendChild(div);
+      }
+
+      socket.on("new_file", addFile);
+
+      socket.on("file_deleted", (f) => {
+        const el = document.getElementById(f);
+        if (el) el.remove();
+      });
+
+      fetch("/list")
+        .then((r) => r.json())
+        .then((list) => list.forEach(addFile));
+    </script>
+  </body>
+</html>
