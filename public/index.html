@@ -348,12 +348,18 @@
         }
 
         socket.emit("join_room", code, (response) => {
+          if (timer) {
+            clearInterval(timer);
+          }
           if (response.success) {
             hasJoined = true;
             roomSetup.style.display = "none";
             sessionInfo.style.display = "flex";
             displayCode.innerText = code;
-            expiryDisplay.innerText = `(Expires: ${new Date(response.expiresAt).toLocaleString()})`;
+            expiryDisplay.innerText = `(Expires: ${updateCountdown(new Date(data.expiresAt))})`;
+            setInterval(() => {
+              expiryDisplay.innerText = `(Expires: ${updateCountdown(new Date(data.expiresAt))})`;
+            }, 1000);
             textSyncArea.style.display = "block";
           } else {
             alert(response.message);
@@ -364,6 +370,10 @@
       // Handle Room Leave
       leaveBtn.onclick = () => {
         if (!hasJoined) return;
+
+        if (timer) {
+          clearInterval(timer);
+        }
 
         // Tell the server we are leaving the room
         socket.emit("leave_room");
