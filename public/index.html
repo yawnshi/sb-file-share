@@ -2,21 +2,31 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>LAN File Share</title>
+    <title>SB File Share | Sharing is caring</title>
 
     <style>
       body {
-        font-family: Arial;
+        font-family: Arial, sans-serif;
         background: #f2f2f2;
         margin: 40px;
+        box-sizing: border-box;
+      }
+
+      .container {
+        display: flex;
+        gap: 20px;
+        max-width: 1200px;
+        margin: auto;
+        flex-wrap: wrap;
       }
 
       .box {
         background: white;
         padding: 25px;
         border-radius: 10px;
-        max-width: 700px;
-        margin: auto;
+        flex: 1;
+        min-width: 300px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
       }
 
       #drop {
@@ -25,43 +35,90 @@
         text-align: center;
         margin-bottom: 20px;
         cursor: pointer;
+        border-radius: 8px;
+        transition: background 0.2s;
+      }
+
+      #drop:hover {
+        background: #f9f9f9;
       }
 
       .progress {
         height: 10px;
         background: #ddd;
         margin-top: 10px;
+        border-radius: 5px;
+        overflow: hidden;
       }
 
       .bar {
-        height: 10px;
+        height: 100%;
         width: 0%;
         background: #4caf50;
+        transition: width 0.2s;
       }
 
       .file {
-        margin: 8px 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px;
+        background: #fdfdfd;
+        border: 1px solid #eee;
+        margin-bottom: 6px;
+        border-radius: 4px;
       }
 
       button {
-        margin-left: 10px;
+        background: #ff4d4d;
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+
+      button:hover { background: #e60000; }
+      
+      #shared-text {
+        width: 100%;
+        height: 300px;
+        padding: 15px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        resize: vertical;
+        font-family: monospace;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+
+      .status {
+        font-size: 12px;
+        color: #666;
+        margin-top: 10px;
       }
     </style>
   </head>
 
   <body>
-    <div class="box">
-      <h2>LAN File Share</h2>
-
-      <div id="drop">Drop files here or click</div>
-
-      <div class="progress">
-        <div class="bar" id="bar"></div>
+    <div class="container">
+      <!-- File Share Box -->
+      <div class="box">
+        <h2>File Share</h2>
+        <div id="drop">Drop files here or click to browse</div>
+        <div class="progress">
+          <div class="bar" id="bar"></div>
+        </div>
+        <h3>Files</h3>
+        <div id="files"></div>
       </div>
 
-      <h3>Files</h3>
-
-      <div id="files"></div>
+      <!-- WebRTC Text Sync Box -->
+      <div class="box">
+        <h2>Real-time Shared Notes</h2>
+        <textarea id="shared-text" placeholder="Type here... Text syncs instantly P2P via WebRTC!"></textarea>
+        <div class="status" id="peer-count">Connected Peers: 0</div>
+      </div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
@@ -70,13 +127,18 @@
       const socket = io();
       const drop = document.getElementById("drop");
       const bar = document.getElementById("bar");
+      const filesContainer = document.getElementById("files");
+      const textarea = document.getElementById("shared-text");
+      const peerCountDisplay = document.getElementById("peer-count");
 
+      // ==========================================
+      // FILE SHARE LOGIC (Original)
+      // ==========================================
       function upload(file) {
         const form = new FormData();
         form.append("file", file);
 
         const xhr = new XMLHttpRequest();
-
         xhr.open("POST", "/upload");
 
         xhr.upload.onprogress = (e) => {
@@ -91,28 +153,21 @@
         xhr.send(form);
       }
 
-      // drag drop
-
       drop.onclick = () => {
         const i = document.createElement("input");
         i.type = "file";
-
         i.onchange = () => upload(i.files[0]);
-
         i.click();
       };
 
-      drop.ondragover = (e) => {
-        e.preventDefault();
-      };
-
+      drop.ondragover = (e) => e.preventDefault();
       drop.ondrop = (e) => {
         e.preventDefault();
-
         upload(e.dataTransfer.files[0]);
       };
 
       function addFile(f) {
+        if(document.getElementById(f.file)) return; // prevent dupes
         const div = document.createElement("div");
         div.className = "file";
         div.id = f.file;
@@ -121,33 +176,130 @@
         a.href = f.url;
         a.innerText = f.name;
         a.download = f.name;
+        a.target = "_blank";
 
         const del = document.createElement("button");
-        del.innerText = "delete";
+        del.innerText = "Delete";
 
         del.onclick = async () => {
           await fetch("/delete/" + f.file, { method: "DELETE" });
-
-          const el = document.getElementById(f.file);
-          if (el) el.remove();
         };
 
         div.appendChild(a);
         div.appendChild(del);
-
-        files.appendChild(div);
+        filesContainer.appendChild(div);
       }
 
       socket.on("new_file", addFile);
-
       socket.on("file_deleted", (f) => {
         const el = document.getElementById(f);
         if (el) el.remove();
       });
 
-      fetch("/list")
-        .then((r) => r.json())
-        .then((list) => list.forEach(addFile));
+      fetch("/list").then((r) => r.json()).then((list) => list.forEach(addFile));
+
+      // ==========================================
+      // WEBRTC TEXT SYNC LOGIC
+      // ==========================================
+      const peers = {}; // Dictionary of connected peers { socketId: { pc, dc } }
+      const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+      function updatePeerCount() {
+        peerCountDisplay.innerText = `Connected Peers: ${Object.keys(peers).length}`;
+      }
+
+      function setupDataChannel(dc, peerId) {
+        dc.onopen = () => {
+          // Send our current text to the newly connected peer
+          if (textarea.value) {
+            dc.send(JSON.stringify({ type: 'sync', text: textarea.value }));
+          }
+        };
+
+        dc.onmessage = (e) => {
+          const data = JSON.parse(e.data);
+          if (data.type === 'sync' && textarea.value !== data.text) {
+            textarea.value = data.text;
+          }
+        };
+      }
+
+      function setupPeerConnection(pc, peerId) {
+        pc.onicecandidate = (e) => {
+          if (e.candidate) {
+            socket.emit("signal", { to: peerId, signal: e.candidate });
+          }
+        };
+      }
+
+      // Handle broadcasting text input to all peers
+      textarea.addEventListener('input', () => {
+        const text = textarea.value;
+        Object.values(peers).forEach(peer => {
+          if (peer.dc && peer.dc.readyState === 'open') {
+            peer.dc.send(JSON.stringify({ type: 'sync', text }));
+          }
+        });
+      });
+
+      // 1. A new peer joined the room, we are the initiator
+      socket.on("peer_joined", async (peerId) => {
+        const pc = new RTCPeerConnection(config);
+        const dc = pc.createDataChannel("text-sync");
+
+        peers[peerId] = { pc, dc };
+        updatePeerCount();
+
+        setupPeerConnection(pc, peerId);
+        setupDataChannel(dc, peerId);
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit("signal", { to: peerId, signal: offer });
+      });
+
+      // 2. Handle incoming WebRTC signaling (Offer/Answer/ICE)
+      socket.on("signal", async (data) => {
+        const { from, signal } = data;
+        let peer = peers[from];
+
+        // If we don't know this peer yet, we are the receiver
+        if (!peer) {
+          const pc = new RTCPeerConnection(config);
+          peer = { pc, dc: null };
+          peers[from] = peer;
+          updatePeerCount();
+
+          setupPeerConnection(pc, from);
+
+          // Listen for the incoming data channel
+          pc.ondatachannel = (e) => {
+            peer.dc = e.channel;
+            setupDataChannel(peer.dc, from);
+          };
+        }
+
+        // Process WebRTC Signals
+        if (signal.type === "offer") {
+          await peer.pc.setRemoteDescription(new RTCSessionDescription(signal));
+          const answer = await peer.pc.createAnswer();
+          await peer.pc.setLocalDescription(answer);
+          socket.emit("signal", { to: from, signal: answer });
+        } else if (signal.type === "answer") {
+          await peer.pc.setRemoteDescription(new RTCSessionDescription(signal));
+        } else if (signal.candidate) {
+          await peer.pc.addIceCandidate(new RTCIceCandidate(signal));
+        }
+      });
+
+      // 3. Cleanup on disconnect
+      socket.on("peer_left", (peerId) => {
+        if (peers[peerId]) {
+          peers[peerId].pc.close();
+          delete peers[peerId];
+          updatePeerCount();
+        }
+      });
     </script>
   </body>
 </html>

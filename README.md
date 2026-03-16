@@ -1,4 +1,4 @@
-# Local file sharing
+# SB file share
 
 ## Features
 
@@ -9,6 +9,7 @@
 - Auto device discovery
 - QR code join
 - File expiration
+- WebRTC client shared notes
 
 ## Next features
 
