@@ -347,11 +347,11 @@
           return;
         }
 
-        socket.emit("join_room", code, (response) => {
+        socket.emit("join_room", code, (data) => {
           if (timer) {
             clearInterval(timer);
           }
-          if (response.success) {
+          if (data.success) {
             hasJoined = true;
             roomSetup.style.display = "none";
             sessionInfo.style.display = "flex";
@@ -362,7 +362,7 @@
             }, 1000);
             textSyncArea.style.display = "block";
           } else {
-            alert(response.message);
+            alert(data.message);
           }
         });
       };
