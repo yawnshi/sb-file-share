@@ -26,7 +26,7 @@
         border-radius: 10px;
         flex: 1;
         min-width: 300px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
       }
 
       #drop {
@@ -78,8 +78,38 @@
         cursor: pointer;
       }
 
-      button:hover { background: #e60000; }
-      
+      button:hover {
+        background: #e60000;
+      }
+
+      /* New Room Setup Styles */
+      .room-setup {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+        align-items: center;
+      }
+
+      .room-setup input {
+        flex: 1;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 14px;
+      }
+
+      .room-setup button {
+        background: #4caf50;
+      }
+
+      .room-setup button:hover {
+        background: #45a049;
+      }
+
+      #text-sync-area {
+        display: none; /* Hidden until connected */
+      }
+
       #shared-text {
         width: 100%;
         height: 300px;
@@ -96,6 +126,14 @@
         font-size: 12px;
         color: #666;
         margin-top: 10px;
+      }
+
+      .btn-secondary {
+        background: #888;
+      }
+
+      .btn-secondary:hover {
+        background: #666;
       }
     </style>
   </head>
@@ -116,8 +154,56 @@
       <!-- WebRTC Text Sync Box -->
       <div class="box">
         <h2>Real-time Shared Notes</h2>
-        <textarea id="shared-text" placeholder="Type here... Text syncs instantly P2P via WebRTC!"></textarea>
-        <div class="status" id="peer-count">Connected Peers: 0</div>
+
+        <!-- Room Connection Panel -->
+        <div class="room-setup" id="room-setup">
+          <button id="create-btn" style="background: #007bff">
+            Create New Session
+          </button>
+          <span> OR </span>
+          <input type="text" id="room-code" placeholder="Enter session code" />
+          <button id="join-btn">Join</button>
+        </div>
+
+        <!-- Hidden until connected -->
+        <div
+          id="session-info"
+          style="
+            display: none;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+            font-weight: bold;
+            color: #333;
+          "
+        >
+          <div>
+            Session Code:
+            <span
+              id="display-code"
+              style="color: #4caf50; font-family: monospace; font-size: 1.2em"
+            ></span>
+          </div>
+          <div
+            id="expiry-display"
+            style="font-size: 12px; color: #666; font-weight: normal"
+          ></div>
+          <button
+            id="leave-btn"
+            class="btn-secondary"
+            style="padding: 4px 8px; font-size: 12px"
+          >
+            Leave Session
+          </button>
+        </div>
+
+        <div id="text-sync-area">
+          <textarea
+            id="shared-text"
+            placeholder="Type here... Text syncs instantly P2P via WebRTC!"
+          ></textarea>
+          <div class="status" id="peer-count">Connected Peers: 0</div>
+        </div>
       </div>
     </div>
 
@@ -128,6 +214,16 @@
       const drop = document.getElementById("drop");
       const bar = document.getElementById("bar");
       const filesContainer = document.getElementById("files");
+
+      const roomSetup = document.getElementById("room-setup");
+      const roomCodeInput = document.getElementById("room-code");
+      const joinBtn = document.getElementById("join-btn");
+      const createBtn = document.getElementById("create-btn");
+      const leaveBtn = document.getElementById("leave-btn");
+      const sessionInfo = document.getElementById("session-info");
+      const displayCode = document.getElementById("display-code");
+      const expiryDisplay = document.getElementById("expiry-display");
+      const textSyncArea = document.getElementById("text-sync-area");
       const textarea = document.getElementById("shared-text");
       const peerCountDisplay = document.getElementById("peer-count");
 
@@ -167,7 +263,7 @@
       };
 
       function addFile(f) {
-        if(document.getElementById(f.file)) return; // prevent dupes
+        if (document.getElementById(f.file)) return; // prevent dupes
         const div = document.createElement("div");
         div.className = "file";
         div.id = f.file;
@@ -196,13 +292,100 @@
         if (el) el.remove();
       });
 
-      fetch("/list").then((r) => r.json()).then((list) => list.forEach(addFile));
+      fetch("/list")
+        .then((r) => r.json())
+        .then((list) => list.forEach(addFile));
 
       // ==========================================
       // WEBRTC TEXT SYNC LOGIC
       // ==========================================
       const peers = {}; // Dictionary of connected peers { socketId: { pc, dc } }
       const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+      let hasJoined = false,
+        timer;
+
+      // Handle Room Creation
+      createBtn.onclick = () => {
+        if (timer) {
+          clearInterval(timer);
+        }
+        socket.emit("create_room", (data) => {
+          hasJoined = true;
+          roomSetup.style.display = "none";
+          sessionInfo.style.display = "flex";
+          displayCode.innerText = data.code;
+          expiryDisplay.innerText = `(Expires: ${updateCountdown(new Date(data.expiresAt))})`;
+          setInterval(() => {
+            expiryDisplay.innerText = `(Expires: ${updateCountdown(new Date(data.expiresAt))})`;
+          }, 1000);
+          textSyncArea.style.display = "block";
+        });
+      };
+
+      function updateCountdown(expiry) {
+        const now = new Date();
+        const diff = expiry - now;
+
+        if (diff <= 0) {
+          return "Expired";
+          clearInterval(timer);
+          return;
+        }
+
+        const seconds = Math.floor(diff / 1000) % 60;
+        const minutes = Math.floor(diff / (1000 * 60)) % 60;
+        const hours = Math.floor(diff / (1000 * 60 * 60)) % 24;
+
+        return `${hours}h ${minutes}m ${seconds}s`;
+      }
+
+      // Handle Room Join
+      joinBtn.onclick = () => {
+        const code = roomCodeInput.value.trim().toUpperCase();
+        if (!code) {
+          alert("Please enter a connection code.");
+          return;
+        }
+
+        socket.emit("join_room", code, (response) => {
+          if (response.success) {
+            hasJoined = true;
+            roomSetup.style.display = "none";
+            sessionInfo.style.display = "flex";
+            displayCode.innerText = code;
+            expiryDisplay.innerText = `(Expires: ${new Date(response.expiresAt).toLocaleString()})`;
+            textSyncArea.style.display = "block";
+          } else {
+            alert(response.message);
+          }
+        });
+      };
+
+      // Handle Room Leave
+      leaveBtn.onclick = () => {
+        if (!hasJoined) return;
+
+        // Tell the server we are leaving the room
+        socket.emit("leave_room");
+
+        // Close all peer connections cleanly
+        Object.keys(peers).forEach((peerId) => {
+          if (peers[peerId] && peers[peerId].pc) {
+            peers[peerId].pc.close();
+          }
+          delete peers[peerId];
+        });
+
+        hasJoined = false;
+        textarea.value = ""; // clear text for privacy
+        updatePeerCount();
+
+        // Revert UI to initial state
+        sessionInfo.style.display = "none";
+        textSyncArea.style.display = "none";
+        roomSetup.style.display = "flex";
+        roomCodeInput.value = ""; // clear the input box
+      };
 
       function updatePeerCount() {
         peerCountDisplay.innerText = `Connected Peers: ${Object.keys(peers).length}`;
@@ -212,13 +395,13 @@
         dc.onopen = () => {
           // Send our current text to the newly connected peer
           if (textarea.value) {
-            dc.send(JSON.stringify({ type: 'sync', text: textarea.value }));
+            dc.send(JSON.stringify({ type: "sync", text: textarea.value }));
           }
         };
 
         dc.onmessage = (e) => {
           const data = JSON.parse(e.data);
-          if (data.type === 'sync' && textarea.value !== data.text) {
+          if (data.type === "sync" && textarea.value !== data.text) {
             textarea.value = data.text;
           }
         };
@@ -233,17 +416,19 @@
       }
 
       // Handle broadcasting text input to all peers
-      textarea.addEventListener('input', () => {
+      textarea.addEventListener("input", () => {
         const text = textarea.value;
-        Object.values(peers).forEach(peer => {
-          if (peer.dc && peer.dc.readyState === 'open') {
-            peer.dc.send(JSON.stringify({ type: 'sync', text }));
+        Object.values(peers).forEach((peer) => {
+          if (peer.dc && peer.dc.readyState === "open") {
+            peer.dc.send(JSON.stringify({ type: "sync", text }));
           }
         });
       });
 
-      // 1. A new peer joined the room, we are the initiator
+      // 1. A new peer joined the same room, we are the initiator
       socket.on("peer_joined", async (peerId) => {
+        if (!hasJoined) return; // Ignore if we haven't joined a room yet
+
         const pc = new RTCPeerConnection(config);
         const dc = pc.createDataChannel("text-sync");
 
@@ -260,6 +445,8 @@
 
       // 2. Handle incoming WebRTC signaling (Offer/Answer/ICE)
       socket.on("signal", async (data) => {
+        if (!hasJoined) return;
+
         const { from, signal } = data;
         let peer = peers[from];
 
@@ -292,7 +479,7 @@
         }
       });
 
-      // 3. Cleanup on disconnect
+      // 3. Cleanup on disconnect or when another peer leaves intentionally
       socket.on("peer_left", (peerId) => {
         if (peers[peerId]) {
           peers[peerId].pc.close();

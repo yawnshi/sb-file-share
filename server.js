@@ -4,14 +4,18 @@ const { Server } = require("socket.io");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 const uploadDir = path.join(__dirname, "uploads");
+const sessionsFile = path.join(__dirname, "sessions.json");
 
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+if (!fs.existsSync(sessionsFile))
+  fs.writeFileSync(sessionsFile, JSON.stringify([]));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -23,6 +27,24 @@ const upload = multer({ storage });
 app.use(express.static("public"));
 app.use("/files", express.static(uploadDir));
 app.use(express.json());
+
+// --- Session File Helpers ---
+function getSessions() {
+  try {
+    return JSON.parse(fs.readFileSync(sessionsFile, "utf-8"));
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveSession(code) {
+  const sessions = getSessions();
+  if (!sessions.find((s) => s.code === code)) {
+    // Store object with creation timestamp
+    sessions.push({ code, timestamp: Date.now() });
+    fs.writeFileSync(sessionsFile, JSON.stringify(sessions));
+  }
+}
 
 function listFiles() {
   return fs.readdirSync(uploadDir).map((f) => ({
@@ -63,8 +85,58 @@ app.delete("/delete/:file", (req, res) => {
 
 // --- WebRTC Signaling ---
 io.on("connection", (socket) => {
-  // Announce to others that a new peer has joined
-  socket.broadcast.emit("peer_joined", socket.id);
+  // Auto-generate a new unique room/session
+  socket.on("create_room", (callback) => {
+    let code;
+    const sessions = getSessions();
+    // Generate 6-character hex code and ensure no clashes
+    do {
+      code = crypto.randomBytes(3).toString("hex").toUpperCase();
+    } while (sessions.some((s) => s.code === code));
+
+    saveSession(code);
+    socket.join(code);
+    socket.room = code;
+
+    // Calculate expiration (24 hours from now)
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+
+    if (typeof callback === "function") callback({ code, expiresAt });
+  });
+
+  // Join a specific room based on the code validation
+  socket.on("join_room", (roomCode, callback) => {
+    const sessions = getSessions();
+    const session = sessions.find((s) => s.code === roomCode);
+
+    if (session) {
+      socket.join(roomCode);
+      socket.room = roomCode; // Store room on the socket session
+      // Announce to others IN THE SAME ROOM that a new peer has joined
+      socket.to(roomCode).emit("peer_joined", socket.id);
+
+      // Calculate expiration based on original creation time
+      const expiresAt = session.timestamp + 24 * 60 * 60 * 1000;
+
+      if (typeof callback === "function")
+        callback({ success: true, expiresAt });
+    } else {
+      if (typeof callback === "function")
+        callback({
+          success: false,
+          message: "Invalid session code! Session does not exist.",
+        });
+    }
+  });
+
+  // Client manually leaves the room
+  socket.on("leave_room", () => {
+    if (socket.room) {
+      socket.leave(socket.room);
+      socket.to(socket.room).emit("peer_left", socket.id);
+      socket.room = null;
+    }
+  });
 
   // Relay signaling data (offer/answer/ice candidates) between peers
   socket.on("signal", (data) => {
@@ -74,25 +146,47 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Announce peer left
+  // Announce peer left on actual disconnect
   socket.on("disconnect", () => {
-    socket.broadcast.emit("peer_left", socket.id);
+    if (socket.room) {
+      socket.to(socket.room).emit("peer_left", socket.id);
+    }
   });
 });
 
-// auto cleanup every hour (files older than 24h)
+// auto cleanup every hour (files & sessions older than 24h)
 setInterval(() => {
   const now = Date.now();
 
-  fs.readdirSync(uploadDir).forEach((f) => {
-    const p = path.join(uploadDir, f);
-    const stat = fs.statSync(p);
+  // 1. Cleanup Files
+  try {
+    fs.readdirSync(uploadDir).forEach((f) => {
+      const p = path.join(uploadDir, f);
+      const stat = fs.statSync(p);
 
-    if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
-      fs.unlinkSync(p);
-      io.emit("file_deleted", f);
+      if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
+        fs.unlinkSync(p);
+        io.emit("file_deleted", f);
+      }
+    });
+  } catch (e) {
+    console.error("File cleanup error", e);
+  }
+
+  // 2. Cleanup Old Sessions
+  try {
+    const sessions = getSessions();
+    const validSessions = sessions.filter(
+      (s) => now - s.timestamp < 24 * 60 * 60 * 1000,
+    );
+
+    // Only rewrite if we actually removed some old sessions
+    if (sessions.length !== validSessions.length) {
+      fs.writeFileSync(sessionsFile, JSON.stringify(validSessions));
     }
-  });
+  } catch (e) {
+    console.error("Session cleanup error", e);
+  }
 }, 3600000);
 
 server.listen(3000, () => {
